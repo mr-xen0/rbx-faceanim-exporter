@@ -7,7 +7,7 @@ A Blender add-on for exporting facial image sequence animations into **Moon Anim
 ## Installation
 
 1. **Blender Add-on**: Download `faceanim_exporter.zip` from the [Releases](https://github.com/mr-xen0/rbx-faceanim-exporter/releases) page.
-2. **Roblox Plugin**: Install the plugin in Roblox Studio from the [Roblox Creator Store](https://create.roblox.com/store/asset/...).
+2. **Roblox Plugin**: Install the plugin in Roblox Studio from the [Roblox Creator Store](https://create.roblox.com/store/asset/81143924403575/Face-Animation-Importer).
 3. Enable the add-on in Blender preferences (see **Blender Setup** below).
 
 ## Blender Setup
