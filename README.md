@@ -2,7 +2,7 @@
 
 A Blender add-on for exporting facial image sequence animations into **Moon Animator 2** save files for Roblox.
 
-> **Note**: This add-on is designed specifically to work with a specific face rig. You can download/view the compatible rig here: **[Download Compatible Rig](https://link-to-rig.com)**.
+> **Note**: This add-on is designed specifically to work with a specific face rig. You can download the compatible rig here: **[Download Face Rig](https://link-to-rig.com)**.
 
 ## Installation
 
