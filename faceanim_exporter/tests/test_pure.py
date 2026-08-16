@@ -143,6 +143,144 @@ class ContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "tick 0"):
             validate_document(document)
 
+    def test_hold_keyframe_preserved_from_fcurves(self):
+        class Box:
+            pass
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for number in range(1, 5):
+                (root / f"mouth.{number:04d}.png").write_bytes(b"png")
+
+            user = Box()
+            user.frame_start = 1
+            user.frame_duration = 1
+            user.frame_offset = 0
+            user.use_cyclic = False
+
+            image = Box()
+            image.source = "SEQUENCE"
+            image.filepath = str(root / "mouth.0001.png")
+
+            node = Box()
+            node.name = "FaceTexture"
+            node.bl_idname = "ShaderNodeTexImage"
+            node.image = image
+            node.image_user = user
+
+            class Nodes:
+                def get(self, name):
+                    return node if name == "FaceTexture" else None
+
+            # Create FCurve keyframe points at frames 1, 80, 100, 101
+            class KeyframePoint:
+                def __init__(self, frame):
+                    self.co = (float(frame), 0.0)
+
+            class FCurve:
+                def __init__(self, data_path, frames):
+                    self.data_path = data_path
+                    self.keyframe_points = [KeyframePoint(f) for f in frames]
+
+            class Action:
+                def __init__(self, fcurves):
+                    self.fcurves = fcurves
+
+            class AnimData:
+                def __init__(self, action):
+                    self.action = action
+
+            target_rig = Box()
+            target_rig.name = "FaceRig"
+            target_rig.animation_data = AnimData(
+                Action([FCurve('pose.bones["FaceControls"]["mouth"]', [1, 80, 100, 101])])
+            )
+
+            # Driver connecting ImageUser to target_rig
+            class Target:
+                def __init__(self, id_obj, data_path):
+                    self.id = id_obj
+                    self.data_path = data_path
+                    self.bone_target = ""
+
+            class DriverVar:
+                def __init__(self, target):
+                    self.targets = [target]
+
+            class Driver:
+                def __init__(self, var):
+                    self.variables = [var]
+
+            class DriverFCurve:
+                def __init__(self, data_path, driver):
+                    self.data_path = data_path
+                    self.driver = driver
+
+            driver_fc = DriverFCurve(
+                'nodes["FaceTexture"].image_user.frame_offset',
+                Driver(DriverVar(Target(target_rig, 'pose.bones["FaceControls"]["mouth"]'))),
+            )
+
+            material = Box()
+            material.name = "Face"
+            material.use_nodes = True
+            material.node_tree = Box()
+            material.node_tree.nodes = Nodes()
+            material.node_tree.animation_data = Box()
+            material.node_tree.animation_data.drivers = [driver_fc]
+            material.node_tree.animation_data.action = None
+
+            slot = Box()
+            slot.material = material
+            obj = Box()
+            obj.name = "Mouth"
+            obj.material_slots = [slot]
+
+            class Objects(dict):
+                pass
+
+            scene = Box()
+            scene.objects = Objects({"Mouth": obj})
+            scene.use_preview_range = False
+            scene.frame_start = 1
+            scene.frame_end = 120
+            scene.frame_current = 1
+            scene.render = Render(60, 1.0)
+            scene.faceanim_export = Box()
+            scene.faceanim_export.animation_id = "hold_test"
+            scene.faceanim_export.rig_id = "hero"
+            scene.faceanim_export.target_rig = target_rig
+
+            # Frame 1..79: offset 0 (mouth/0001)
+            # Frame 80..100: offset 1 (mouth/0002) -> both frame 80 and 100 have keyframes!
+            # Frame 101..120: offset 2 (mouth/0003)
+            def frame_set(frame):
+                scene.frame_current = frame
+                if frame < 80:
+                    user.frame_offset = 0
+                elif frame <= 100:
+                    user.frame_offset = 1
+                else:
+                    user.frame_offset = 2
+            scene.frame_set = frame_set
+
+            fake_bpy = types.SimpleNamespace(
+                path=types.SimpleNamespace(abspath=lambda value: value),
+                context=types.SimpleNamespace(view_layer=types.SimpleNamespace(update=lambda: None)),
+            )
+            config = FaceChannelConfig("mouth", "Mouth", "Face", "FaceTexture")
+            with patch.dict("sys.modules", {"bpy": fake_bpy}):
+                document = export_face_animation(scene, [config])
+
+            # Verify tick 0 (frame 1), tick 79 (frame 80), tick 99 (frame 100), tick 100 (frame 101)
+            self.assertEqual(document["tracks"][0]["keys"], [
+                {"tick": 0, "texture_key": "mouth/0001"},
+                {"tick": 79, "texture_key": "mouth/0002"},
+                {"tick": 99, "texture_key": "mouth/0002"},
+                {"tick": 100, "texture_key": "mouth/0003"},
+            ])
+            validate_document(document)
+
 
 class ManifestTests(unittest.TestCase):
     def make(self, root: Path, names: list[str]) -> Path:

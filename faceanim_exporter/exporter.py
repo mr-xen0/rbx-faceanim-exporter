@@ -180,15 +180,140 @@ def _sample_texture_key(resolved: ResolvedChannel, source_frame: int) -> str:
     return texture_key(resolved.config.channel_id, file_number)
 
 
+def _extract_fcurve_frames(fcurve: Any) -> set[int]:
+    frames: set[int] = set()
+    for kp in getattr(fcurve, "keyframe_points", []):
+        co = getattr(kp, "co", None)
+        if co is not None and len(co) >= 1:
+            frames.add(int(round(co[0])))
+    return frames
+
+
+def _extract_action_frames(action: Any, filter_fn: Any = None) -> set[int]:
+    frames: set[int] = set()
+    if action is None:
+        return frames
+    fcurves = getattr(action, "fcurves", None)
+    if fcurves is None:
+        fcurves = getattr(action, "curves", [])
+    for fc in fcurves:
+        if filter_fn is None or filter_fn(fc):
+            frames.update(_extract_fcurve_frames(fc))
+    for layer in getattr(action, "layers", []):
+        for strip in getattr(layer, "strips", []):
+            strip_action = getattr(strip, "action", None)
+            if strip_action is not None and strip_action != action:
+                frames.update(_extract_action_frames(strip_action, filter_fn))
+    return frames
+
+
+def find_channel_keyframe_frames(scene: Any, resolved: ResolvedChannel, target_rig: Any = None) -> set[int]:
+    frames: set[int] = set()
+    channel_id = resolved.config.channel_id.lower()
+    obj_name = resolved.config.object_name
+    mat_name = resolved.config.material_name
+    node_name = resolved.config.image_node_name
+
+    scene_objects = getattr(scene, "objects", None)
+    obj = None
+    if hasattr(scene_objects, "get"):
+        obj = scene_objects.get(obj_name)
+    elif isinstance(scene_objects, (list, tuple)):
+        obj = next((o for o in scene_objects if getattr(o, "name", "") == obj_name), None)
+
+    if obj is not None:
+        anim = getattr(obj, "animation_data", None)
+        if anim and getattr(anim, "action", None):
+            frames.update(_extract_action_frames(anim.action))
+
+    material = None
+    if obj is not None:
+        material = next(
+            (
+                slot.material
+                for slot in getattr(obj, "material_slots", [])
+                if getattr(slot, "material", None) and slot.material.name == mat_name
+            ),
+            None,
+        )
+
+    if material is not None:
+        mat_anim = getattr(material, "animation_data", None)
+        if mat_anim and getattr(mat_anim, "action", None):
+            frames.update(_extract_action_frames(mat_anim.action))
+
+        node_tree = getattr(material, "node_tree", None)
+        if node_tree is not None:
+            nt_anim = getattr(node_tree, "animation_data", None)
+            if nt_anim:
+                if getattr(nt_anim, "action", None):
+                    def nt_filter(fc: Any) -> bool:
+                        dp = getattr(fc, "data_path", "")
+                        return node_name in dp or "image_user" in dp or not dp
+
+                    frames.update(_extract_action_frames(nt_anim.action, nt_filter))
+
+                for driver_fcurve in getattr(nt_anim, "drivers", []):
+                    dp = getattr(driver_fcurve, "data_path", "")
+                    if node_name not in dp and "image_user.frame_offset" not in dp:
+                        continue
+                    driver = getattr(driver_fcurve, "driver", None)
+                    for var in getattr(driver, "variables", []) if driver else []:
+                        for tgt in getattr(var, "targets", []):
+                            tgt_id = getattr(tgt, "id", None)
+                            tgt_dp = getattr(tgt, "data_path", "")
+                            tgt_bone = getattr(tgt, "bone_target", "")
+                            if tgt_id is not None:
+                                tgt_anim = getattr(tgt_id, "animation_data", None)
+                                if tgt_anim and getattr(tgt_anim, "action", None):
+                                    def tgt_filter(fc: Any, dp: str = tgt_dp, bone: str = tgt_bone) -> bool:
+                                        fc_dp = getattr(fc, "data_path", "")
+                                        if dp and (fc_dp == dp or fc_dp.startswith(dp) or dp in fc_dp):
+                                            return True
+                                        if bone and (f'bones["{bone}"]' in fc_dp or f"bones['{bone}']" in fc_dp):
+                                            return True
+                                        return False
+
+                                    matched = _extract_action_frames(tgt_anim.action, tgt_filter)
+                                    if matched:
+                                        frames.update(matched)
+                                    else:
+                                        def fallback_filter(fc: Any, cid: str = channel_id) -> bool:
+                                            fc_dp = getattr(fc, "data_path", "").lower()
+                                            return cid in fc_dp
+
+                                        frames.update(_extract_action_frames(tgt_anim.action, fallback_filter))
+
+    if target_rig is not None:
+        rig_anim = getattr(target_rig, "animation_data", None)
+        if rig_anim and getattr(rig_anim, "action", None):
+            def rig_filter(fc: Any) -> bool:
+                fc_dp = getattr(fc, "data_path", "").lower()
+                return channel_id in fc_dp or obj_name.lower() in fc_dp
+
+            frames.update(_extract_action_frames(rig_anim.action, rig_filter))
+
+    return frames
+
+
 def export_face_animation(scene: Any, configs: list[FaceChannelConfig]) -> dict[str, Any]:
     """Evaluate each timeline frame; restore the original frame on all paths."""
     resolved = validate_export(scene, configs)
     start, end, _ = get_export_range(scene)
     fps = validate_integer_fps(scene)
-    animation_id = scene.faceanim_export.animation_id
-    rig_id = scene.faceanim_export.rig_id
+    export_settings = getattr(scene, "faceanim_export", None)
+    animation_id = getattr(export_settings, "animation_id", "")
+    rig_id = getattr(export_settings, "rig_id", "")
+    target_rig = getattr(export_settings, "target_rig", None)
     if not animation_id or not rig_id:
         raise ValueError("Animation ID and Rig ID are required")
+
+    channel_keyframes = {
+        item.config.channel_id: {
+            f for f in find_channel_keyframe_frames(scene, item, target_rig) if start <= f <= end
+        }
+        for item in resolved
+    }
 
     keys_by_channel = {item.config.channel_id: [] for item in resolved}
     previous: dict[str, str] = {}
@@ -204,8 +329,13 @@ def export_face_animation(scene: Any, configs: list[FaceChannelConfig]) -> dict[
             for item in resolved:
                 channel_id = item.config.channel_id
                 key = _sample_texture_key(item, frame)
-                if key != previous.get(channel_id):
-                    keys_by_channel[channel_id].append({"tick": tick, "texture_key": key})
+                is_keyframe = frame in channel_keyframes.get(channel_id, set())
+                if frame == start or key != previous.get(channel_id) or is_keyframe:
+                    channel_keys = keys_by_channel[channel_id]
+                    if not channel_keys or channel_keys[-1]["tick"] != tick:
+                        channel_keys.append({"tick": tick, "texture_key": key})
+                    else:
+                        channel_keys[-1]["texture_key"] = key
                     previous[channel_id] = key
     finally:
         scene.frame_set(original_frame)
