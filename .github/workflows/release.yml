@@ -35,4 +35,6 @@ jobs:
           files: faceanim_exporter.zip
           draft: false
           prerelease: false
-          generate_release_notes: true
+          generate_release_notes: false
+          body: ""
+
