@@ -29,12 +29,11 @@ jobs:
         run: |
           python build_addon.py
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: faceanim_exporter.zip
-          draft: false
-          prerelease: false
-          generate_release_notes: false
-          body: ""
+      - name: Create or Update Clean GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          gh release delete "$TAG_NAME" --yes --cleanup-tag=false || true
+          gh release create "$TAG_NAME" faceanim_exporter.zip --title "$TAG_NAME" --notes "First release"
 
